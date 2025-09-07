@@ -1,82 +1,75 @@
-// dllmain.cpp : Defines the entry point for the DLL application.
-#include <src/shared.hpp>
+#include <windows.h>
+#include <thread>
+#include <chrono>
+#include <cmath>
+#include "shared.h" // assuming this contains ivector2, c_pixel, etc.
 
-bool main()
-{
-    LOG("job_helper::fish @ github.com/clauadv/job_helper");
-    LOG("if you have any questions, https://discord.gg/K7RNp2vtVq \n");
+BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
+    switch (ul_reason_for_call) {
+    case DLL_PROCESS_ATTACH:
+        std::thread([] {
+            SetProcessDPIAware();
 
-    const auto device_context = GetDC(nullptr);
-    if (!device_context)
-    {
-        LOG_ERROR("failed to get device_context");
-        this_thread::sleep_for(chrono::seconds(5));
+            HWND hwnd = GetForegroundWindow();
+            if (!hwnd) return;
 
-        return true;
-    }
+            HDC device_context = GetDC(hwnd);
 
-    SetProcessDPIAware();
+            RECT rc{};
+            GetClientRect(hwnd, &rc);
+            shared::ivector2 screen{ rc.right - rc.left, rc.bottom - rc.top };
 
-    const auto screen_resolution = shared::ivector2{ GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
-    if (screen_resolution.m_x != 1920 || screen_resolution.m_y != 1080)
-    {
-        LOG_ERROR("your screen resolution (%d, %d) is unsupported", screen_resolution.m_x, screen_resolution.m_y);
-        this_thread::sleep_for(chrono::seconds(5));
+            const shared::ivector2 base{ 1920, 1080 };
+            const double sx = static_cast<double>(screen.m_x) / base.m_x;
+            const double sy = static_cast<double>(screen.m_y) / base.m_y;
 
-        return true;
-    }
+            auto scale_pt = [&](int x, int y) -> shared::ivector2 {
+                return {
+                    static_cast<int>(std::lround(x * sx)),
+                    static_cast<int>(std::lround(y * sy))
+                };
+            };
 
-    LOG("waiting for job interface");
+            auto scale_size = [&](int w, int h) -> shared::ivector2 {
+                return {
+                    std::max(1, static_cast<int>(std::lround(w * sx))),
+                    std::max(1, static_cast<int>(std::lround(h * sy)))
+                };
+            };
 
-    for (;;)
-    {
-        static auto marker_position = shared::ivector2{ 0, 0 };
-        if (marker_position.zero())
-        {
-            marker_position = shared::c_pixel::find_marker_position(device_context, shared::ivector2{ 1920, 870 });
-        }
+            shared::ivector2 marker_position;
+            shared::ivector2 skillcheck_position;
 
-        if (!marker_position.zero())
-        {
-            LOG("simulating key space");
-            shared::c_input::simulate_key(VK_SPACE);
+            while (true) {
+                if (marker_position.zero()) {
+                    // Auto-detect marker at the middle of the monitor
+                    shared::ivector2 mid_point{
+                        screen.m_x / 2,
+                        screen.m_y / 2
+                    };
 
-            this_thread::sleep_for(chrono::milliseconds(500));
+                    marker_position = shared::c_pixel::find_marker_position(
+                        device_context,
+                        mid_point
+                    );
+                }
 
-            LOG("reset marker position");
-            marker_position = { 0, 0 };
-        }
+                if (skillcheck_position.zero()) {
+                    skillcheck_position = shared::c_pixel::find_skillcheck_position(
+                        device_context,
+                        scale_pt(812, 1027),
+                        scale_size(300, 1)
+                    );
+                }
 
-        static auto skillcheck_position = shared::ivector2{ 0, 0 };
-        if (skillcheck_position.zero())
-        {
-            skillcheck_position = shared::c_pixel::find_skillcheck_position(device_context, shared::ivector2{ 812, 1027 }, shared::ivector2{ 300, 1 });
-            LOG("found skillcheck position at (%d, %d)", skillcheck_position.m_x, skillcheck_position.m_y);
-        }
+                // Example: process logic here using scaled positions
 
-        if (!skillcheck_position.zero())
-        {
-            const auto pixel = GetPixel(device_context, skillcheck_position.m_x, skillcheck_position.m_y);
-
-            auto color = shared::icolor::get_pixel_color(pixel);
-            if (color.r_between(200, 255) && color.g_between(150, 255) && color.b_between(221, 255))
-            {
-                LOG("simulating key space");
-                shared::c_input::simulate_key(VK_SPACE);
-
-                LOG("reset skillcheck position");
-                skillcheck_position = { 0, 0 };
-
-                LOG("waiting 8 seconds before reeling the fishing rod again");
-                this_thread::sleep_for(chrono::seconds(8));
-
-                LOG("simulating key space \n");
-                shared::c_input::simulate_key(VK_SPACE);
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
-        }
+
+            ReleaseDC(hwnd, device_context);
+        }).detach();
+        break;
     }
-
-    ReleaseDC(nullptr, device_context);
-
-    return false;
+    return TRUE;
 }
